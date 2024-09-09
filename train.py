@@ -34,6 +34,9 @@ class GSSTrainer(Trainer):
         self.gaussRender = GaussRenderer(**kwargs.get('render_kwargs', {}))
         self.lambda_dssim = 0.2
         self.lambda_depth = 0.0
+        self.psnr_values = []
+        self.min_psnr = float('inf')
+        self.max_psnr = float('-inf')
     
     def on_train_step(self):
         ind = np.random.choice(len(self.data['camera']))
@@ -64,10 +67,21 @@ class GSSTrainer(Trainer):
 
         total_loss = (1-self.lambda_dssim) * l1_loss + self.lambda_dssim * ssim_loss + depth_loss * self.lambda_depth
         psnr = utils.img2psnr(out['render'], rgb)
-        log_dict = {'total': total_loss,'l1':l1_loss, 'ssim': ssim_loss, 'depth': depth_loss, 'psnr': psnr}
+
+        # Update PSNR tracking
+        self.psnr_values.append(psnr)
+        self.min_psnr = min(self.min_psnr, psnr)
+        self.max_psnr = max(self.max_psnr, psnr)
+
+        log_dict = {'total': total_loss,'l1':l1_loss, 'ssim': ssim_loss, 'depth': depth_loss, 'psnr': psnr, 'min_psnr': self.min_psnr, 'max_psnr': self.max_psnr}
 
         return total_loss, log_dict
-
+    
+    def log_psnr_stats(self):
+        if self.psnr_values:
+            avg_psnr = sum(self.psnr_values) / len(self.psnr_values)
+            print(f"PSNR Stats - Avg: {avg_psnr:.2f}, Min: {self.min_psnr:.2f}, Max: {self.max_psnr:.2f}")
+            
     def on_evaluate_step(self, **kwargs):
         import matplotlib.pyplot as plt
         ind = np.random.choice(len(self.data['camera']))
@@ -116,8 +130,8 @@ if __name__ == "__main__":
             "config": {
                 "name": "integer",
                 # data
-                "width": 4,
-                "frac_width": 2
+                "width": 2,
+                "frac_width": 1
             }
         },
     }
@@ -142,8 +156,8 @@ if __name__ == "__main__":
     newGaussModel, _ = passes.quantize_transform_pass(newGaussModel, quant_config)
 
     trainer = GSSTrainer(
-        # model=newGaussModel.model, 
-        model=GaussModel,
+        model=newGaussModel.model, 
+        # model=GaussModel,
         data=data,
         train_batch_size=1, 
         train_num_steps=1000,

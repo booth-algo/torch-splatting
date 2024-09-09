@@ -173,8 +173,12 @@ class Trainer(object):
                     if self.step !=0 and (self.step % self.i_save == 0):
                         milestone = self.step // self.i_save
                         self.save(milestone)
+                        self.log_psnr_stats()
                 
                 pbar.update(1)
+
+        if accelerator.is_main_process:
+            self.log_psnr_stats()
 
         if self.with_tracking:
             accelerator.end_training()
