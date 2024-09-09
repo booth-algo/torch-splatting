@@ -16,11 +16,8 @@ from torch.profiler import profile, ProfilerActivity
 import torch
 from torch.fx import symbolic_trace
 import torch.nn as nn
-import whisper
-from whisper import Whisper
 from chop import MaseGraph
 import chop.passes as passes
-from whisper.model import AudioEncoder, ResidualAttentionBlock, sinusoids, LayerNorm, MultiHeadAttention
 from torch.nn import Conv1d
 import torch.nn.functional as F
 
