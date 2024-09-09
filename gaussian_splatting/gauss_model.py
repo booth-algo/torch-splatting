@@ -24,7 +24,8 @@ class GaussModel(nn.Module):
     >>> out = gaussRender(pc=gaussModel, camera=camera)
     """
     def setup_functions(self):
-        def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
+        def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation,):
+            # breakpoint()
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
             symm = strip_symmetric(actual_covariance)
@@ -40,7 +41,7 @@ class GaussModel(nn.Module):
 
         self.rotation_activation = torch.nn.functional.normalize
     
-    def __init__(self, sh_degree : int=3, debug=False):
+    def __init__(self, sh_degree : int=3, debug=False, sample_size=1000):
         super(GaussModel, self).__init__()
         self.max_sh_degree = sh_degree  
         self._xyz = torch.empty(0)
@@ -88,30 +89,30 @@ class GaussModel(nn.Module):
         self.max_radii2D = torch.zeros((self._xyz.shape[0]), device="cuda")
         return self
 
-    @property
+    # @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
     
-    @property
+    # @property
     def get_rotation(self):
         return self.rotation_activation(self._rotation)
     
-    @property
+    # @property
     def get_xyz(self):
         return self._xyz
     
-    @property
+    # @property
     def get_features(self):
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
     
-    @property
+    # @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
     def get_covariance(self, scaling_modifier = 1):
-        return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
+        return self.covariance_activation(self.get_scaling(), scaling_modifier, self._rotation)
 
     def save_ply(self, path):
         from plyfile import PlyData, PlyElement
@@ -146,3 +147,20 @@ class GaussModel(nn.Module):
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
         return l
+    
+    def forward(self):
+
+        # xyz = self.get_xyz()
+        # features = self.get_features()
+        # scaling = self.get_scaling()
+        # rotation = self.get_rotation()
+        # opacity = self.get_opacity()
+        # covariance = self.get_covariance()
+
+        return {
+            'xyz': self._xyz,
+            'opacity': self.get_opacity(),
+            'scaling': self.get_scaling(),
+            'rotation': self.get_rotation(),
+            'features': self.get_features(),
+        }

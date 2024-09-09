@@ -13,6 +13,17 @@ import contextlib
 
 from torch.profiler import profile, ProfilerActivity
 
+import torch
+from torch.fx import symbolic_trace
+import torch.nn as nn
+import whisper
+from whisper import Whisper
+from chop import MaseGraph
+import chop.passes as passes
+from whisper.model import AudioEncoder, ResidualAttentionBlock, sinusoids, LayerNorm, MultiHeadAttention
+from torch.nn import Conv1d
+import torch.nn.functional as F
+
 USE_GPU_PYTORCH = True
 USE_PROFILE = False
 
@@ -39,7 +50,9 @@ class GSSTrainer(Trainer):
             prof = contextlib.nullcontext()
 
         with prof:
-            out = self.gaussRender(pc=self.model, camera=camera)
+            pc_output = self.model()
+            out = self.gaussRender(pc_output=pc_output, camera=camera)
+            # out = self.gaussRender(pc=self.model, camera=camera)
 
         if USE_PROFILE:
             print(prof.key_averages(group_by_stack_n=True).table(sort_by='self_cuda_time_total', row_limit=20))
@@ -63,7 +76,11 @@ class GSSTrainer(Trainer):
             camera = to_viewpoint_camera(camera)
 
         rgb = self.data['rgb'][ind].detach().cpu().numpy()
-        out = self.gaussRender(pc=self.model, camera=camera)
+
+        pc_output = self.model()
+        # out = self.gaussRender(pc=self.model, camera=camera)
+        out = self.gaussRender(pc_output=pc_output, camera=camera)
+
         rgb_pd = out['render'].detach().cpu().numpy()
         depth_pd = out['depth'].detach().cpu().numpy()[..., 0]
         depth = self.data['depth'][ind].detach().cpu().numpy()
@@ -84,20 +101,52 @@ if __name__ == "__main__":
 
 
     points = get_point_clouds(data['camera'], data['depth'], data['alpha'], data['rgb'])
-    raw_points = points.random_sample(2**14)
+    random_samp = 2**13
+    raw_points = points.random_sample(random_samp)
     # raw_points.write_ply(open('points.ply', 'wb'))
 
-    gaussModel = GaussModel(sh_degree=4, debug=False)
-    gaussModel.create_from_pcd(pcd=raw_points)
+    quant_config = {
+        "by": "type",
+        "default": {
+            "config": {
+                "name": None,
+            }
+        },
+        "linear": {
+            "config": {
+                "name": "integer",
+                # data
+                "width": 4,
+                "frac_width": 2
+            }
+        },
+    }
+
+
+    GaussModel = GaussModel(sh_degree=4, debug=False)
+    GaussModel.create_from_pcd(pcd=raw_points)
     
     render_kwargs = {
         'white_bkgd': True,
     }
+    
+    traced_model = symbolic_trace(GaussModel)
+    # print(traced_model.graph)
+    traced_model.graph.print_tabular()
 
-    trainer = GSSTrainer(model=gaussModel, 
+    newGaussModel = MaseGraph(GaussModel)
+
+    newGaussModel, _ = passes.init_metadata_analysis_pass(newGaussModel)
+    newGaussModel, _ = passes.add_common_metadata_analysis_pass(newGaussModel)
+
+    newGaussModel, _ = passes.quantize_transform_pass(newGaussModel, quant_config)
+
+    trainer = GSSTrainer(
+        # model=newGaussModel.model, 
+        model=GaussModel,
         data=data,
         train_batch_size=1, 
-        train_num_steps=25000,
+        train_num_steps=1000,
         i_image =100,
         train_lr=1e-3, 
         amp=False,

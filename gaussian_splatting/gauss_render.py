@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import math
 from einops import reduce
+import torch.fx as fx
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -16,51 +17,65 @@ def homogeneous(points):
 
 
 def build_rotation(r):
-    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
+    norm = torch.sqrt(torch.sum(r * r, dim=1, keepdim=True))
+    q = r / norm
 
-    q = r / norm[:, None]
+    # Unpack quaternion components
+    r, x, y, z = q.unbind(1)
 
-    R = torch.zeros((q.size(0), 3, 3), device='cuda')
+    # Compute common terms
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    xy = x * y
+    xz = x * z
+    yz = y * z
+    rx = r * x
+    ry = r * y
+    rz = r * z
 
-    r = q[:, 0]
-    x = q[:, 1]
-    y = q[:, 2]
-    z = q[:, 3]
+    # Construct rotation matrix
+    R_flat = torch.stack([
+        1 - 2 * (yy + zz), 2 * (xy - rz), 2 * (xz + ry),
+        2 * (xy + rz), 1 - 2 * (xx + zz), 2 * (yz - rx),
+        2 * (xz - ry), 2 * (yz + rx), 1 - 2 * (xx + yy)
+    ], dim=1)
 
-    R[:, 0, 0] = 1 - 2 * (y*y + z*z)
-    R[:, 0, 1] = 2 * (x*y - r*z)
-    R[:, 0, 2] = 2 * (x*z + r*y)
-    R[:, 1, 0] = 2 * (x*y + r*z)
-    R[:, 1, 1] = 1 - 2 * (x*x + z*z)
-    R[:, 1, 2] = 2 * (y*z - r*x)
-    R[:, 2, 0] = 2 * (x*z - r*y)
-    R[:, 2, 1] = 2 * (y*z + r*x)
-    R[:, 2, 2] = 1 - 2 * (x*x + y*y)
+    # Reshape to 3x3 matrix
+    R = R_flat.view(-1, 3, 3)
+
     return R
 
 
-
 def build_scaling_rotation(s, r):
-    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+    # print("s = ", s, "    s.shape = ", s.shape, "    s.shape[0] = ", s.shape[0])
+    L = s.new_zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+
     R = build_rotation(r)
 
-    L[:,0,0] = s[:,0]
-    L[:,1,1] = s[:,1]
-    L[:,2,2] = s[:,2]
+    # Create scaling matrix
+    zeros = torch.zeros_like(s[:, 0])
+    scaling_matrix = torch.stack([
+        torch.stack([s[:, 0], zeros, zeros], dim=1),
+        torch.stack([zeros, s[:, 1], zeros], dim=1),
+        torch.stack([zeros, zeros, s[:, 2]], dim=1)
+    ], dim=1)
+    
+    # Combine scaling and rotation
+    L = torch.matmul(R, scaling_matrix)
 
-    L = R @ L
     return L
 
 
 def strip_lowerdiag(L):
-    uncertainty = torch.zeros((L.shape[0], 6), dtype=torch.float, device="cuda")
-    uncertainty[:, 0] = L[:, 0, 0]
-    uncertainty[:, 1] = L[:, 0, 1]
-    uncertainty[:, 2] = L[:, 0, 2]
-    uncertainty[:, 3] = L[:, 1, 1]
-    uncertainty[:, 4] = L[:, 1, 2]
-    uncertainty[:, 5] = L[:, 2, 2]
-    return uncertainty
+    return torch.stack([
+        L[:, 0, 0],
+        L[:, 0, 1],
+        L[:, 0, 2],
+        L[:, 1, 1],
+        L[:, 1, 2],
+        L[:, 2, 2]
+    ], dim=1)
 
 
 def strip_symmetric(sym):
@@ -186,10 +201,10 @@ class GaussRenderer(nn.Module):
                 over_br = rect[1][..., 0].clip(max=w+TILE_SIZE-1), rect[1][..., 1].clip(max=h+TILE_SIZE-1)
                 in_mask = (over_br[0] > over_tl[0]) & (over_br[1] > over_tl[1]) # 3D gaussian in the tile 
                 
-                if not in_mask.sum() > 0:
+                if not torch.sum(in_mask) > 0:
                     continue
 
-                P = in_mask.sum()
+                P = torch.sum(in_mask)
                 tile_coord = self.pix_coord[h:h+TILE_SIZE, w:w+TILE_SIZE].flatten(0,-2)
                 sorted_depths, index = torch.sort(depths[in_mask])
                 sorted_means2D = means2D[in_mask][index]
@@ -207,9 +222,9 @@ class GaussRenderer(nn.Module):
                 
                 alpha = (gauss_weight[..., None] * sorted_opacity[None]).clip(max=0.99) # B P 1
                 T = torch.cat([torch.ones_like(alpha[:,:1]), 1-alpha[:,:-1]], dim=1).cumprod(dim=1)
-                acc_alpha = (alpha * T).sum(dim=1)
-                tile_color = (T * alpha * sorted_color[None]).sum(dim=1) + (1-acc_alpha) * (1 if self.white_bkgd else 0)
-                tile_depth = ((T * alpha) * sorted_depths[None,:,None]).sum(dim=1)
+                acc_alpha = torch.sum(alpha * T, dim=1)
+                tile_color = torch.sum(T * alpha * sorted_color[None], dim=1) + (1-acc_alpha) * (1 if self.white_bkgd else 0)
+                tile_depth = torch.sum((T * alpha) * sorted_depths[None,:,None], dim=1)
                 self.render_color[h:h+TILE_SIZE, w:w+TILE_SIZE] = tile_color.reshape(TILE_SIZE, TILE_SIZE, -1)
                 self.render_depth[h:h+TILE_SIZE, w:w+TILE_SIZE] = tile_depth.reshape(TILE_SIZE, TILE_SIZE, -1)
                 self.render_alpha[h:h+TILE_SIZE, w:w+TILE_SIZE] = acc_alpha.reshape(TILE_SIZE, TILE_SIZE, -1)
@@ -223,12 +238,12 @@ class GaussRenderer(nn.Module):
         }
 
 
-    def forward(self, camera, pc, **kwargs):
-        means3D = pc.get_xyz
-        opacity = pc.get_opacity
-        scales = pc.get_scaling
-        rotations = pc.get_rotation
-        shs = pc.get_features
+    def forward(self, pc_output, camera, **kwargs):
+        means3D = pc_output['xyz']
+        opacity = pc_output['opacity']
+        scales = pc_output['scaling']
+        rotations = pc_output['rotation']
+        shs = pc_output['features']
         
         if USE_PROFILE:
             prof = profiler.record_function
