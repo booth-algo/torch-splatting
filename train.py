@@ -20,6 +20,10 @@ from chop import MaseGraph
 import chop.passes as passes
 from torch.nn import Conv1d
 import torch.nn.functional as F
+import time
+import os
+from pathlib import Path
+import time
 
 USE_GPU_PYTORCH = True
 USE_PROFILE = False
@@ -53,24 +57,39 @@ class GSSTrainer(Trainer):
             pc_output = self.model()
             out = self.gaussRender(pc_output=pc_output, camera=camera)
             # out = self.gaussRender(pc=self.model, camera=camera)
-
+            
         if USE_PROFILE:
             print(prof.key_averages(group_by_stack_n=True).table(sort_by='self_cuda_time_total', row_limit=20))
 
 
         l1_loss = loss_utils.l1_loss(out['render'], rgb)
         depth_loss = loss_utils.l1_loss(out['depth'][..., 0][mask], depth[mask])
-        ssim_loss = 1.0-loss_utils.ssim(out['render'], rgb)
+        ssim = loss_utils.ssim(out['render'], rgb)
+        ssim_loss = 1.0-ssim
 
         total_loss = (1-self.lambda_dssim) * l1_loss + self.lambda_dssim * ssim_loss + depth_loss * self.lambda_depth
         psnr = utils.img2psnr(out['render'], rgb)
+
+        allocated, cached = self.log_gpu_usage()
 
         # Update PSNR tracking
         self.psnr_values.append(psnr)
         self.min_psnr = min(self.min_psnr, psnr)
         self.max_psnr = max(self.max_psnr, psnr)
 
-        log_dict = {'total': total_loss,'l1':l1_loss, 'ssim': ssim_loss, 'depth': depth_loss, 'psnr': psnr, 'min_psnr': self.min_psnr, 'max_psnr': self.max_psnr}
+        log_dict = {
+            'total': total_loss,
+            'l1': l1_loss,
+            'ssim': ssim,
+            'depth_loss': depth_loss,
+            'psnr': psnr,
+            'min_psnr': self.min_psnr,
+            'max_psnr': self.max_psnr,
+            'gpu_memory_allocated': allocated, 
+            'gpu_memory_cached': cached
+        }
+
+        self.final_log_dict = log_dict
 
         return total_loss, log_dict
     
@@ -102,6 +121,26 @@ class GSSTrainer(Trainer):
         image = np.concatenate([image, depth], axis=0)
         utils.imwrite(str(self.results_folder / f'image-{self.step}.png'), image)
 
+    def log_gpu_usage(self):
+        allocated = torch.cuda.memory_allocated(0) / (1024 **2)
+        cached = torch.cuda.memory_reserved(0) / (1024 **2)
+        return allocated, cached
+    
+
+def get_test_folder(base_folder='result', prefix='test'):
+    """ Finds next available test folder in results folder """
+
+    base_path = Path(base_folder)
+    base_path.mkdir(parents=True, exist_ok=True)
+    
+    test_folders = [f.name for f in base_path.iterdir() if f.is_dir() and f.name.startswith(prefix)]
+    
+    test_numbers = [int(f[len(prefix):]) for f in test_folders if f[len(prefix):].isdigit()]
+    
+    next_test_number = max(test_numbers) + 1 if test_numbers else 0
+
+    return f"{prefix}{next_test_number}"    
+
 
 if __name__ == "__main__":
     device = 'cuda'
@@ -109,7 +148,6 @@ if __name__ == "__main__":
     data = read_all(folder, resize_factor=0.5)
     data = {k: v.to(device) for k, v in data.items()}
     data['depth_range'] = torch.Tensor([[1,3]]*len(data['rgb'])).to(device)
-
 
     points = get_point_clouds(data['camera'], data['depth'], data['alpha'], data['rgb'])
     random_samp = 2**13
@@ -127,8 +165,8 @@ if __name__ == "__main__":
             "config": {
                 "name": "integer",
                 # data
-                "width": 2,
-                "frac_width": 1
+                "width": 8,
+                "frac_width": 4
             }
         },
     }
@@ -152,19 +190,32 @@ if __name__ == "__main__":
 
     newGaussModel, _ = passes.quantize_transform_pass(newGaussModel, quant_config)
 
+    results_folder = get_test_folder()
+
     trainer = GSSTrainer(
         model=newGaussModel.model, 
         # model=GaussModel,
         data=data,
         train_batch_size=1, 
-        train_num_steps=1000,
+        train_num_steps=30,
         i_image =100,
         train_lr=1e-3, 
         amp=False,
         fp16=False,
-        results_folder='result/test',
+        results_folder=f'result/{results_folder}',
         render_kwargs=render_kwargs,
     )
 
+    start_time = time.time()
+
     trainer.on_evaluate_step()
     trainer.train()
+
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    hours, remainder = divmod(total_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    print(f"\nTraining took {end_time - start_time} seconds")
+    print("\nFinal Training Log: ", trainer.final_log_dict)
