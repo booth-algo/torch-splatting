@@ -175,7 +175,8 @@ class GaussRenderer(nn.Module):
         self.active_sh_degree = active_sh_degree
         self.debug = False
         self.white_bkgd = white_bkgd
-        self.pix_coord = torch.stack(torch.meshgrid(torch.arange(256), torch.arange(256), indexing='xy'), dim=-1).to('cuda')
+        # self.pix_coord = torch.stack(torch.meshgrid(torch.arange(256), torch.arange(256), indexing='xy'), dim=-1).to('cuda')
+        self.pix_coord = None
         
     
     def build_color(self, means3D, shs, camera):
@@ -239,6 +240,9 @@ class GaussRenderer(nn.Module):
 
 
     def forward(self, pc_output, camera, **kwargs):
+        if self.pix_coord is None or self.pix_coord.shape[:2] != (camera.image_height, camera.image_width):
+            self.pix_coord = torch.stack(torch.meshgrid(torch.arange(camera.image_height), torch.arange(camera.image_width), indexing='xy'), dim=-1).to('cuda')
+        
         means3D = pc_output['xyz']
         opacity = pc_output['opacity']
         scales = pc_output['scaling']

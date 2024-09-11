@@ -47,6 +47,9 @@ def read_all(folder, resize_factor=1.):
         src_rgb , src_depth, src_alpha, src_camera = \
         read_image(src_rgb_file, src_pose, 
             intrinsic, max_depth=max_depth, resize_factor=resize_factor)
+        
+        # Extract focal lengths
+        focal_x, focal_y = intrinsic[0, 0], intrinsic[1, 1]
 
         src_rgbs.append(src_rgb)
         src_depths.append(src_depth)

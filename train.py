@@ -41,12 +41,15 @@ class GSSTrainer(Trainer):
     
     def on_train_step(self):
         ind = np.random.choice(len(self.data['camera']))
-        camera = self.data['camera'][ind]
+        camera_params = self.data['camera'][ind]
+        camera = to_viewpoint_camera(camera_params)
+        # camera = self.data['camera'][ind]
         rgb = self.data['rgb'][ind]
         depth = self.data['depth'][ind]
         mask = (self.data['alpha'][ind] > 0.5)
-        if USE_GPU_PYTORCH:
-            camera = to_viewpoint_camera(camera)
+        
+        # if USE_GPU_PYTORCH:
+        #     camera = to_viewpoint_camera(camera)
 
         if USE_PROFILE:
             prof = profile(activities=[ProfilerActivity.CUDA], with_stack=True)
@@ -101,9 +104,11 @@ class GSSTrainer(Trainer):
     def on_evaluate_step(self, **kwargs):
         import matplotlib.pyplot as plt
         ind = np.random.choice(len(self.data['camera']))
-        camera = self.data['camera'][ind]
-        if USE_GPU_PYTORCH:
-            camera = to_viewpoint_camera(camera)
+        # camera = self.data['camera'][ind]
+        # if USE_GPU_PYTORCH:
+        #     camera = to_viewpoint_camera(camera)
+
+        camera = to_viewpoint_camera(self.data['camera'][ind])
 
         rgb = self.data['rgb'][ind].detach().cpu().numpy()
 
@@ -114,9 +119,17 @@ class GSSTrainer(Trainer):
         rgb_pd = out['render'].detach().cpu().numpy()
         depth_pd = out['depth'].detach().cpu().numpy()[..., 0]
         depth = self.data['depth'][ind].detach().cpu().numpy()
+
+        if depth.shape != depth_pd.shape:
+            depth = np.resize(depth, depth_pd.shape)
+
         depth = np.concatenate([depth, depth_pd], axis=1)
         depth = (1 - depth / depth.max())
         depth = plt.get_cmap('jet')(depth)[..., :3]
+
+        if rgb.shape != rgb_pd.shape:
+            rgb = np.resize(rgb, rgb_pd.shape)
+
         image = np.concatenate([rgb, rgb_pd], axis=1)
         image = np.concatenate([image, depth], axis=0)
         utils.imwrite(str(self.results_folder / f'image-{self.step}.png'), image)
@@ -144,7 +157,7 @@ def get_test_folder(base_folder='result', prefix='test'):
 
 if __name__ == "__main__":
     device = 'cuda'
-    folder = './B075X65R3X'
+    folder = './training-data/B075X65R3X'
     data = read_all(folder, resize_factor=0.5)
     data = {k: v.to(device) for k, v in data.items()}
     data['depth_range'] = torch.Tensor([[1,3]]*len(data['rgb'])).to(device)
@@ -197,7 +210,7 @@ if __name__ == "__main__":
         # model=GaussModel,
         data=data,
         train_batch_size=1, 
-        train_num_steps=30,
+        train_num_steps=1000,
         i_image =100,
         train_lr=1e-3, 
         amp=False,
