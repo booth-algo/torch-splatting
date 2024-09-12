@@ -167,6 +167,9 @@ if __name__ == "__main__":
     raw_points = points.random_sample(random_samp)
     # raw_points.write_ply(open('points.ply', 'wb'))
 
+    full_width = 2
+    frac_width = 2
+
     quant_config = {
         "by": "type",
         "default": {
@@ -176,10 +179,16 @@ if __name__ == "__main__":
         },
         "linear": {
             "config": {
-                "name": "integer",
+                "name": "block_fp",
                 # data
-                "width": 8,
-                "frac_width": 4
+                "data_in_width": full_width,
+                "data_in_frac_width": frac_width,
+                # weight
+                "weight_width": full_width,
+                "weight_frac_width": frac_width,
+                # bias
+                "bias_width": full_width,
+                "bias_frac_width": frac_width,
             }
         },
     }
