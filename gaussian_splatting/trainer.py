@@ -47,6 +47,14 @@ class Trainer(object):
         amp=False,
         fp16=False,
         with_tracking=False,
+        densify_from_iter=1000,
+        densify_until_iter=5000,
+        densification_interval=100,
+        opacity_reset_interval=500,
+        densify_grad_threshold=0.01,
+        min_opacity=0.005,
+        scene_extent=1.0,
+        size_threshold=20,
         **kwargs,
     ):
         super().__init__()
@@ -62,6 +70,15 @@ class Trainer(object):
 
         self.model = model
         self.sampler = sampler
+
+        self.densify_from_iter = densify_from_iter
+        self.densify_until_iter = densify_until_iter
+        self.densification_interval = densification_interval
+        self.opacity_reset_interval = opacity_reset_interval
+        self.densify_grad_threshold = densify_grad_threshold
+        self.min_opacity = min_opacity
+        self.scene_extent = scene_extent
+        self.size_threshold = size_threshold
 
         self.train_num_steps = train_num_steps
         self.i_save = i_save
@@ -92,7 +109,30 @@ class Trainer(object):
                 'train_num_steps':train_num_steps,
             })
 
+    def perform_densification_and_pruning(self):
+        model_output = self.model()
+        xyz = model_output['xyz']
+        opacity = model_output['opacity']
+        scaling = model_output['scaling']
 
+        if self.step < self.densify_from_iter:
+            return
+
+        if self.step > self.densify_from_iter and self.step % self.densification_interval == 0:
+            grads = self.xyz_gradient_accum / self.denom
+            grads[grads.isnan()] = 0.0
+
+            self.densify_and_clone(grads, xyz, opacity, scaling)
+            self.densify_and_split(grads, xyz, opacity, scaling)
+
+            if self.step % self.opacity_reset_interval == 0:
+                self.reset_opacity()
+
+        # Update optimizer parameters
+        self.opt.param_groups[0]['params'] = list(self.model.parameters())
+
+        # Re-prepare model after densification
+        self.model, self.opt = self.accelerator.prepare(self.model, self.opt)
 
     def save(self, milestone):
         if not self.accelerator.is_local_main_process:
@@ -147,15 +187,28 @@ class Trainer(object):
             while self.step < self.train_num_steps:
 
                 total_loss = 0.
+                log_dict = {}
 
                 for _ in range(self.gradient_accumulate_every):
 
                     with self.accelerator.autocast():
-                        loss, log_dict = self.on_train_step()
+                        loss, step_log_dict = self.on_train_step()
                         loss = loss / self.gradient_accumulate_every
                         total_loss += loss
 
-                    self.accelerator.backward(loss)
+                    # Merge log dicts
+                    for k, v in step_log_dict.items():
+                        if k in log_dict:
+                            log_dict[k] += v / self.gradient_accumulate_every
+                        else:
+                            log_dict[k] = v / self.gradient_accumulate_every
+
+                self.opt.step()
+                self.opt.zero_grad()
+
+                # Densification and pruning
+                if self.step < self.train_num_steps:
+                    self.perform_densification_and_pruning()
 
                 # all reduce to get the total loss
                 total_loss = accelerator.reduce(total_loss)

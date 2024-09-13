@@ -38,39 +38,52 @@ class GSSTrainer(Trainer):
         self.psnr_values = []
         self.min_psnr = float('inf')
         self.max_psnr = float('-inf')
-    
+
+        model_output = self.model()
+        self.xyz_gradient_accum = torch.zeros_like(model_output['xyz'])
+        self.denom = torch.zeros(model_output['xyz'].shape[0], 1, device=model_output['xyz'].device)
+
+    def get_viewspace_points(self, camera):
+        model_output = self.model()
+        world_points = model_output['xyz']
+        return camera.world_to_view(world_points)
+
+    def get_visibility_filter(self, camera):
+        viewspace_points = self.get_viewspace_points(camera)
+        return viewspace_points[:, 2] > 0
+
+    def accumulate_gradient_statistics(self):
+        # This method will be called after backward() in the training loop
+        model_output = self.model()
+        xyz = model_output['xyz']
+        
+        if xyz.grad is not None:
+            visibility_filter = self.get_visibility_filter(self.current_camera)
+            grad_norm = torch.norm(xyz.grad[visibility_filter, :2], dim=-1, keepdim=True)
+            self.xyz_gradient_accum[visibility_filter] += grad_norm
+            self.denom[visibility_filter] += 1
+
     def on_train_step(self):
         ind = np.random.choice(len(self.data['camera']))
         camera_params = self.data['camera'][ind]
-        camera = to_viewpoint_camera(camera_params)
-        # camera = self.data['camera'][ind]
+        self.current_camera = to_viewpoint_camera(camera_params)
         rgb = self.data['rgb'][ind]
         depth = self.data['depth'][ind]
         mask = (self.data['alpha'][ind] > 0.5)
-        
-        # if USE_GPU_PYTORCH:
-        #     camera = to_viewpoint_camera(camera)
 
-        if USE_PROFILE:
-            prof = profile(activities=[ProfilerActivity.CUDA], with_stack=True)
-        else:
-            prof = contextlib.nullcontext()
-
-        with prof:
-            pc_output = self.model()
-            out = self.gaussRender(pc_output=pc_output, camera=camera)
-            # out = self.gaussRender(pc=self.model, camera=camera)
-            
-        if USE_PROFILE:
-            print(prof.key_averages(group_by_stack_n=True).table(sort_by='self_cuda_time_total', row_limit=20))
-
+        pc_output = self.model()
+        out = self.gaussRender(pc_output=pc_output, camera=self.current_camera)
 
         l1_loss = loss_utils.l1_loss(out['render'], rgb)
         depth_loss = loss_utils.l1_loss(out['depth'][..., 0][mask], depth[mask])
         ssim = loss_utils.ssim(out['render'], rgb)
-        ssim_loss = 1.0-ssim
+        ssim_loss = 1.0 - ssim
 
         total_loss = (1-self.lambda_dssim) * l1_loss + self.lambda_dssim * ssim_loss + depth_loss * self.lambda_depth
+
+        total_loss.backward()
+        self.accumulate_gradient_statistics()
+
         psnr = utils.img2psnr(out['render'], rgb)
 
         allocated, cached = self.log_gpu_usage()
@@ -167,7 +180,7 @@ if __name__ == "__main__":
     raw_points = points.random_sample(random_samp)
     # raw_points.write_ply(open('points.ply', 'wb'))
 
-    full_width = 2
+    full_width = 4
     frac_width = 2
 
     quant_config = {
@@ -196,20 +209,18 @@ if __name__ == "__main__":
 
     GaussModel = GaussModel(sh_degree=4, debug=False)
     GaussModel.create_from_pcd(pcd=raw_points)
-    
+
     render_kwargs = {
         'white_bkgd': True,
     }
     
-    traced_model = symbolic_trace(GaussModel)
-    # print(traced_model.graph)
-    traced_model.graph.print_tabular()
+    # traced_model = symbolic_trace(GaussModel)
+    # traced_model.graph.print_tabular()
 
     newGaussModel = MaseGraph(GaussModel)
 
     newGaussModel, _ = passes.init_metadata_analysis_pass(newGaussModel)
     newGaussModel, _ = passes.add_common_metadata_analysis_pass(newGaussModel)
-
     newGaussModel, _ = passes.quantize_transform_pass(newGaussModel, quant_config)
 
     results_folder = get_test_folder()
@@ -239,5 +250,5 @@ if __name__ == "__main__":
     hours, remainder = divmod(total_time, 3600)
     minutes, seconds = divmod(remainder, 60)
 
-    print(f"\nTraining took {end_time - start_time} seconds")
+    print(f"\nTraining took {hours:.0f} hours, {minutes:.0f} minutes, {seconds:.0f} seconds")
     print("\nFinal Training Log: ", trainer.final_log_dict)

@@ -38,6 +38,21 @@ class Camera(nn.Module):
         self.full_proj_transform = self.world_view_transform @ self.projection_matrix
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
+    def world_to_view(self, world_points):
+        """
+        Transform points from world space to view space.
+        
+        :param world_points: tensor of shape (N, 3) containing world space coordinates
+        :return: tensor of shape (N, 3) containing view space coordinates
+        """
+        if world_points.dim() == 2:
+            world_points = world_points.unsqueeze(0)
+        
+        world_points_hom = torch.cat([world_points, torch.ones_like(world_points[..., :1])], dim=-1)
+        view_points = torch.matmul(world_points_hom, self.world_view_transform.T)
+        
+        return view_points[..., :3].squeeze(0)
+
 
 def fov2focal(fov, pixels):
     return pixels / (2 * math.tan(fov / 2))
