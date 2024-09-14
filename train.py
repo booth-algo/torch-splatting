@@ -230,13 +230,23 @@ if __name__ == "__main__":
         # model=GaussModel,
         data=data,
         train_batch_size=1, 
-        train_num_steps=1000,
+        train_num_steps=100,
         i_image =100,
         train_lr=1e-3, 
         amp=False,
         fp16=False,
         results_folder=f'result/{results_folder}',
         render_kwargs=render_kwargs,
+
+        # Densification settings
+        densify_from_iter=5,
+        densify_until_iter=500,
+        densification_interval=2,
+        opacity_reset_interval=500,
+        densify_grad_threshold=0.01,
+        min_opacity=0.005,
+        scene_extent=1.0,
+        size_threshold=20,
     )
 
     start_time = time.time()
