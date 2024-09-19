@@ -180,6 +180,7 @@ class GaussRenderer(nn.Module):
     def build_color(self, means3D, shs, camera):
         rays_o = camera.camera_center
         rays_d = means3D - rays_o
+        print(f"sh={self.active_sh_degree}")
         color = eval_sh(self.active_sh_degree, shs.permute(0,2,1), rays_d)
         color = (color + 0.5).clip(min=0.0)
         return color
@@ -192,7 +193,8 @@ class GaussRenderer(nn.Module):
         self.render_depth = torch.zeros(*self.pix_coord.shape[:2], 1).to('cuda')
         self.render_alpha = torch.zeros(*self.pix_coord.shape[:2], 1).to('cuda')
 
-        TILE_SIZE = 64
+        TILE_SIZE = 16
+
         for h in range(0, camera.image_height, TILE_SIZE):
             for w in range(0, camera.image_width, TILE_SIZE):
                 # check if the rectangle penetrate the tile

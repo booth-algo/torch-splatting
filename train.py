@@ -176,7 +176,8 @@ if __name__ == "__main__":
     data['depth_range'] = torch.Tensor([[1,3]]*len(data['rgb'])).to(device)
 
     points = get_point_clouds(data['camera'], data['depth'], data['alpha'], data['rgb'])
-    random_samp = 2**13
+    # random_samp = 2**13
+    random_samp = 107856
     raw_points = points.random_sample(random_samp)
     # raw_points.write_ply(open('points.ply', 'wb'))
 
@@ -207,7 +208,7 @@ if __name__ == "__main__":
     }
 
 
-    GaussModel = GaussModel(sh_degree=4, debug=False)
+    GaussModel = GaussModel(sh_degree=3, debug=False)
     GaussModel.create_from_pcd(pcd=raw_points)
 
     render_kwargs = {
