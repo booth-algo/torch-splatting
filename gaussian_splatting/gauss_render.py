@@ -189,12 +189,17 @@ class GaussRenderer(nn.Module):
     def render(self, camera, means2D, cov2d, color, opacity, depths):
         radii = get_radius(cov2d)
         rect = get_rect(means2D, radii, width=camera.image_width, height=camera.image_height)
-        
+
+        self.pix_coord = torch.stack(torch.meshgrid(torch.arange(camera.image_width), torch.arange(camera.image_height), indexing='xy'), dim=-1).to('cuda')
+
         self.render_color = torch.ones(*self.pix_coord.shape[:2], 3).to('cuda')
         self.render_depth = torch.zeros(*self.pix_coord.shape[:2], 1).to('cuda')
         self.render_alpha = torch.zeros(*self.pix_coord.shape[:2], 1).to('cuda')
 
         TILE_SIZE = 64
+
+        print("camera.image_height = ", camera.image_height, "    camera.image_width = ", camera.image_width)
+
         for h in range(0, camera.image_height, TILE_SIZE):
             for w in range(0, camera.image_width, TILE_SIZE):
                 # check if the rectangle penetrate the tile
